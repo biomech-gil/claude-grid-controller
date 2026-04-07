@@ -1,0 +1,5 @@
+projects/
+_tmux_setup*.sh
+__pycache__/
+*.pyc
+nohup.out

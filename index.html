@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Claude Grid Controller</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#1a1a2e; color:#e0e0e0; font-family:'Segoe UI',sans-serif; height:100vh; display:flex; flex-direction:column; }
+
+/* Startup */
+#startup { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; gap:16px; }
+#startup h1 { font-size:28px; color:#4fc3f7; }
+#startup .row { display:flex; gap:12px; align-items:center; }
+#startup input { width:60px; padding:8px; background:#16213e; border:1px solid #4fc3f7; color:#fff; border-radius:4px; text-align:center; font-size:16px; }
+#startup button { padding:12px 24px; background:#4fc3f7; color:#1a1a2e; border:none; border-radius:6px; font-size:16px; cursor:pointer; font-weight:bold; }
+#startup button:hover { background:#81d4fa; }
+#startup button.green { background:#4caf50; }
+#startup button.green:hover { background:#66bb6a; }
+#startup .status { color:#aaa; font-size:14px; min-height:20px; }
+#projects { margin-top:20px; max-width:500px; width:100%; }
+#projects h3 { margin-bottom:8px; color:#aaa; }
+.proj-item { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:#16213e; margin-bottom:4px; border-radius:4px; }
+.proj-item button { padding:4px 12px; background:#4fc3f7; color:#1a1a2e; border:none; border-radius:4px; cursor:pointer; }
+
+/* Grid */
+#gridview { display:none; flex-direction:column; height:100vh; }
+#topbar { padding:8px 16px; background:#16213e; display:flex; align-items:center; gap:12px; flex-shrink:0; }
+#topbar .title { font-weight:bold; color:#4fc3f7; }
+#topbar button { padding:4px 12px; background:#333; color:#fff; border:1px solid #555; border-radius:4px; cursor:pointer; }
+#grid { flex:1; display:grid; gap:4px; padding:4px; overflow:hidden; }
+.cell { background:#16213e; border:1px solid #333; border-radius:4px; display:flex; flex-direction:column; overflow:hidden; min-height:0; }
+.cell.selected { border-color:#4fc3f7; box-shadow:0 0 8px rgba(79,195,247,0.4); }
+.cell-hdr { padding:4px 8px; background:#0d1117; cursor:pointer; display:flex; align-items:center; gap:6px; font-size:12px; flex-shrink:0; }
+.cell-hdr input[type=checkbox] { cursor:pointer; }
+.cell-out { flex:1; padding:4px 8px; font-family:'Consolas',monospace; font-size:11px; background:#0d1117; color:#c9d1d9; overflow-y:auto; white-space:pre-wrap; word-break:break-all; min-height:0; }
+.cell-in { display:flex; flex-shrink:0; }
+.cell-in input { flex:1; padding:6px 8px; background:#1a1a2e; color:#fff; border:1px solid #333; font-size:13px; }
+.cell-in button { padding:6px 12px; background:#4fc3f7; color:#1a1a2e; border:none; cursor:pointer; font-weight:bold; }
+
+/* Bottom bar */
+#bottombar { padding:8px 16px; background:#16213e; display:flex; gap:8px; flex-shrink:0; }
+#bottombar input { flex:1; padding:8px; background:#1a1a2e; color:#fff; border:1px solid #333; border-radius:4px; font-size:14px; }
+#bottombar button { padding:8px 16px; background:#4fc3f7; color:#1a1a2e; border:none; border-radius:6px; cursor:pointer; font-weight:bold; white-space:nowrap; }
+#bottombar button.green { background:#4caf50; }
+
+/* Toast */
+#toast { position:fixed; top:20px; right:20px; padding:12px 20px; background:#4caf50; color:#fff; border-radius:6px; display:none; z-index:999; }
+</style>
+</head>
+<body>
+
+<div id="startup">
+  <h1>Claude Grid Controller</h1>
+  <div class="row">
+    <label>행:</label><input type="number" id="inRows" value="3" min="1" max="10">
+    <label>열:</label><input type="number" id="inCols" value="3" min="1" max="10">
+  </div>
+  <button onclick="doStart()">새 프로젝트 시작</button>
+  <button class="green" onclick="doConnect()">기존 세션 연결</button>
+  <div class="status" id="startStatus"></div>
+  <div id="projects"></div>
+</div>
+
+<div id="gridview">
+  <div id="topbar">
+    <span class="title" id="projName">프로젝트</span>
+    <button onclick="selectAll()">전체 선택</button>
+    <button onclick="deselectAll()">선택 해제</button>
+    <button onclick="location.reload()">처음으로</button>
+    <span id="pollStatus" style="margin-left:auto;font-size:12px;color:#aaa;">대기중</span>
+  </div>
+  <div id="grid"></div>
+  <div id="bottombar">
+    <input type="text" id="inputSelected" placeholder="선택된 노드에 전송 (Enter)" onkeydown="if(event.key==='Enter')sendSelected()">
+    <button onclick="sendSelected()">선택 전송</button>
+    <input type="text" id="inputAll" placeholder="전체 전송 (Enter)" onkeydown="if(event.key==='Enter')sendAll()">
+    <button class="green" onclick="sendAll()">전체 전송</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const API = 'http://localhost:8080';
+let gRows=0, gCols=0, gPanes=[], gSelected=new Set(), pollTimer=null;
+
+// ── Toast ──
+function toast(msg, ms=3000) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', ms);
+}
+
+// ── Startup ──
+async function doStart() {
+  const rows = parseInt(document.getElementById('inRows').value) || 3;
+  const cols = parseInt(document.getElementById('inCols').value) || 3;
+  document.getElementById('startStatus').textContent = '프로젝트 시작 중... (약 25초 소요)';
+
+  try {
+    const res = await fetch(API + '/api/start', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({rows, cols})
+    });
+    const data = await res.json();
+    console.log('start response:', data);
+
+    document.getElementById('startStatus').textContent = 'tmux 생성 완료. Claude 로딩 대기 중...';
+
+    // Poll until ready
+    let attempts = 0;
+    const check = setInterval(async () => {
+      attempts++;
+      try {
+        const sr = await fetch(API + '/api/status');
+        const sd = await sr.json();
+        console.log('status:', sd);
+        document.getElementById('startStatus').textContent =
+          `상태: ${sd.setup_status} (${sd.active_pane_count}개 패널)`;
+
+        if (sd.setup_status === 'ready' || attempts > 40) {
+          clearInterval(check);
+          showGrid(sd.rows || rows, sd.cols || cols, sd.project_id || 'project');
+        }
+      } catch(e) {
+        console.error('status poll error:', e);
+      }
+    }, 2000);
+
+  } catch(e) {
+    console.error('start error:', e);
+    document.getElementById('startStatus').textContent = '오류: ' + e.message;
+  }
+}
+
+async function doConnect() {
+  try {
+    const res = await fetch(API + '/api/status');
+    const data = await res.json();
+    console.log('connect status:', data);
+    if (data.active_pane_count > 0) {
+      showGrid(data.rows || 3, data.cols || 3, data.project_id || 'existing');
+      toast('기존 세션 연결됨 (' + data.active_pane_count + '개 패널)');
+    } else {
+      toast('활성 세션이 없습니다');
+    }
+  } catch(e) {
+    toast('연결 실패: ' + e.message);
+  }
+}
+
+// ── Grid ──
+function showGrid(rows, cols, name) {
+  gRows = rows;
+  gCols = cols;
+  document.getElementById('startup').style.display = 'none';
+  document.getElementById('gridview').style.display = 'flex';
+  document.getElementById('projName').textContent = name;
+
+  const grid = document.getElementById('grid');
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  grid.innerHTML = '';
+
+  const total = rows * cols;
+  for (let i = 1; i <= total; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    cell.id = 'cell-' + i;
+    cell.innerHTML = `
+      <div class="cell-hdr" onclick="toggleSelect(${i})">
+        <input type="checkbox" id="chk-${i}" onclick="event.stopPropagation();toggleSelect(${i})">
+        <span>노드 ${i}</span>
+      </div>
+      <div class="cell-out" id="out-${i}"></div>
+      <div class="cell-in">
+        <input type="text" placeholder="입력..." onkeydown="if(event.key==='Enter'){sendOne(${i},this.value);this.value='';}">
+        <button onclick="sendOne(${i},this.previousElementSibling.value);this.previousElementSibling.value='';">전송</button>
+      </div>
+    `;
+    grid.appendChild(cell);
+  }
+
+  startPolling();
+}
+
+// ── Selection ──
+function toggleSelect(i) {
+  if (gSelected.has(i)) {
+    gSelected.delete(i);
+  } else {
+    gSelected.add(i);
+  }
+  updateSelectionUI();
+}
+
+function selectAll() {
+  for (let i = 1; i <= gRows*gCols; i++) gSelected.add(i);
+  updateSelectionUI();
+}
+
+function deselectAll() {
+  gSelected.clear();
+  updateSelectionUI();
+}
+
+function updateSelectionUI() {
+  for (let i = 1; i <= gRows*gCols; i++) {
+    const cell = document.getElementById('cell-' + i);
+    const chk = document.getElementById('chk-' + i);
+    if (cell) cell.classList.toggle('selected', gSelected.has(i));
+    if (chk) chk.checked = gSelected.has(i);
+  }
+}
+
+// ── Send ──
+async function sendOne(pane, msg) {
+  if (!msg || !msg.trim()) return;
+  msg = msg.trim();
+  console.log('sendOne pane=' + pane + ' msg=' + msg);
+
+  // Show in output immediately
+  appendOut(pane, '▶ ' + msg);
+
+  try {
+    const res = await fetch(API + '/api/send', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({panes:[pane], message:msg})
+    });
+    const data = await res.json();
+    console.log('send response:', data);
+  } catch(e) {
+    console.error('send error:', e);
+    appendOut(pane, '⚠ 전송 실패: ' + e.message);
+  }
+}
+
+async function sendSelected() {
+  const msg = document.getElementById('inputSelected').value.trim();
+  if (!msg) return;
+  if (gSelected.size === 0) { toast('노드를 먼저 선택하세요'); return; }
+  document.getElementById('inputSelected').value = '';
+
+  const panes = Array.from(gSelected);
+  console.log('sendSelected panes=', panes, 'msg=', msg);
+
+  panes.forEach(p => appendOut(p, '▶ ' + msg));
+
+  try {
+    const res = await fetch(API + '/api/send', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({panes, message:msg})
+    });
+    const data = await res.json();
+    console.log('sendSelected response:', data);
+  } catch(e) {
+    console.error('sendSelected error:', e);
+  }
+}
+
+async function sendAll() {
+  const msg = document.getElementById('inputAll').value.trim();
+  if (!msg) return;
+  document.getElementById('inputAll').value = '';
+  console.log('sendAll msg=', msg);
+
+  try {
+    const res = await fetch(API + '/api/send-all', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({message:msg})
+    });
+    const data = await res.json();
+    console.log('sendAll response:', data);
+  } catch(e) {
+    console.error('sendAll error:', e);
+  }
+}
+
+// ── Output ──
+function appendOut(pane, text) {
+  const el = document.getElementById('out-' + pane);
+  if (!el) return;
+  el.textContent += text + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── Polling ──
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(fetchOutputs, 3000);
+  fetchOutputs();
+}
+
+async function fetchOutputs() {
+  const status = document.getElementById('pollStatus');
+  try {
+    status.textContent = '갱신중...';
+    const res = await fetch(API + '/api/outputs');
+    const data = await res.json();
+
+    gPanes = data.panes || [];
+    const outputs = data.outputs || {};
+
+    for (const [paneId, text] of Object.entries(outputs)) {
+      const el = document.getElementById('out-' + paneId);
+      if (el) {
+        // Extract just the last meaningful lines
+        const lines = text.split('\n').filter(l => l.trim());
+        const last20 = lines.slice(-20).join('\n');
+        el.textContent = last20;
+        el.scrollTop = el.scrollHeight;
+      }
+    }
+
+    status.textContent = `${gPanes.length}개 패널 활성 · ${new Date().toLocaleTimeString()}`;
+  } catch(e) {
+    status.textContent = '연결 오류';
+    console.error('poll error:', e);
+  }
+}
+
+// ── Load projects ──
+async function loadProjects() {
+  try {
+    const res = await fetch(API + '/api/projects');
+    const data = await res.json();
+    const el = document.getElementById('projects');
+    if (!data.projects || data.projects.length === 0) {
+      el.innerHTML = '';
+      return;
+    }
+    el.innerHTML = '<h3>이전 프로젝트</h3>' + data.projects.map(p => {
+      const c = p.config || {};
+      return `<div class="proj-item">
+        <span>${p.project_id} (${c.rows||'?'}x${c.cols||'?'})</span>
+        <button onclick="doRestore('${p.project_id}',${c.rows||3},${c.cols||3})">복원</button>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.error('loadProjects error:', e);
+  }
+}
+
+async function doRestore(projectId, rows, cols) {
+  try {
+    const res = await fetch(API + '/api/restore', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({project_id: projectId})
+    });
+    const data = await res.json();
+    showGrid(data.rows || rows, data.cols || cols, projectId);
+    toast('프로젝트 복원 시작');
+  } catch(e) {
+    toast('복원 실패: ' + e.message);
+  }
+}
+
+// Init
+loadProjects();
+</script>
+</body>
+</html>
