@@ -73,7 +73,7 @@ sudo npm install -g @anthropic-ai/claude-code
 
 ```bash
 cd ~
-git clone https://github.com/YOUR_USERNAME/claude-grid-controller.git
+git clone https://github.com/biomech-gil/claude-grid-controller.git
 cd claude-grid-controller
 ```
 
